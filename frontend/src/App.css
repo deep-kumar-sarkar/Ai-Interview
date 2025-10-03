@@ -1,10 +1,16 @@
-@import "tailwindcss";
+/*@import "tailwindcss";*/
 
+/* Make the app stretch on large screens and improve base spacing */
 #root {
-  max-width: 1280px;
+  max-width: none; /* allow full width */
   margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  padding: 1.5rem;
+  text-align: left;
+}
+
+body {
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+  color: #0f172a; /* slate-900 */
 }
 
 .logo {
@@ -40,5 +46,15 @@
 }
 
 .read-the-docs {
-  color: #888;
+  color: #666;
+}
+
+/* Ensure tables and containers can expand */
+table.min-w-full {
+  width: 100%;
+}
+
+/* Small accessible helper */
+.text-contrast {
+  color: #0b1220;
 }

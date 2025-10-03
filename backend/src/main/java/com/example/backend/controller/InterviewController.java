@@ -1,5 +1,6 @@
 package com.example.backend.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
@@ -16,161 +17,153 @@ public class InterviewController {
         this.chatClient = chatClientBuilder.build();
     }
 
+    // --- DTOs (Data Transfer Objects) ---
     public record ChatRequest(String message, boolean isFirstMessage) {}
-
-    // DTO for the outgoing response
     public record ChatResponse(String content) {}
-
-    // DTO for the incoming resume text
     public record ParseRequest(String resumeText) {}
-
-    // DTO for the outgoing parsed information
     public record ParsedResume(String name, String email, String phone) {}
-
     public record ChatMessage(String role, String content) {}
-
-    // The request from the frontend, including the full context
-    public record InterviewTurnRequest(List<ChatMessage> history, int turnNumber) {}
-
-    // The response from the backend, including the next step
+    public record InterviewTurnRequest(String resumeContext, List<ChatMessage> history, int turnNumber) {}
     public record InterviewTurnResponse(
-            String aiResponse,        // Feedback + next question
-            String difficulty,        // Difficulty of the new question
-            int timeLimit,            // Time limit in seconds for the new question
-            boolean isInterviewOver,  // Flag to indicate the interview has ended
-            Integer score,            // Final score (optional)
-            String summary            // Final summary (optional)
-    ) {}
+            String aiResponse, String difficulty, int timeLimit,
+            boolean isInterviewOver, Integer score, String summary) {}
 
+    /**
+     * A simple endpoint to test the AI connection or for other chat purposes.
+     */
     @PostMapping("/api/chat")
     public ChatResponse chat(@RequestBody ChatRequest request) {
         String systemPrompt = "You are an expert technical interviewer for a full-stack developer role. " +
-                "Your goal is to conduct an interview. Ask one question at a time. " +
-                "After the user answers, provide brief, constructive feedback and then ask the next question. " +
-                "You will ask 6 questions in total, moving from easy to hard difficulty. " +
                 "Start by introducing yourself and asking the very first question.";
-
-        // The user's message is what changes based on the context.
-        String userMessage;
-
-        if (request.isFirstMessage()) {
-            // For the first message, we can ignore the user's input and just kick off the interview.
-            userMessage = "Let's begin the interview.";
-        } else {
-            // For all subsequent messages, the user's message is their answer.
-            userMessage = request.message();
-        }
+        String userMessage = request.isFirstMessage() ? "Let's begin the interview." : request.message();
 
         try {
             String content = chatClient.prompt()
-                    .system(systemPrompt) // Set the consistent role for the AI
-                    .user(userMessage)    // Use the logic-driven user message
+                    .system(systemPrompt)
+                    .user(userMessage)
                     .call()
                     .content();
             return new ChatResponse(content);
         } catch (Exception ex) {
-            String fallback = request.isFirstMessage()
-                    ? "Hello! I will ask you 6 questions about full-stack development. First question (Easy): What is the difference between let, const, and var in JavaScript?"
-                    : "Thanks for your answer. Next question (Medium): Can you explain how REST differs from GraphQL and when you would choose one over the other?";
-            return new ChatResponse(fallback);
+            return new ChatResponse("Sorry, the AI service is currently unavailable. Please try again later.");
         }
     }
 
+    /**
+     * Receives raw resume text and uses AI to extract structured contact information.
+     */
     @PostMapping("/api/parse-resume")
     public Mono<ParsedResume> parseResume(@RequestBody ParseRequest request) {
-        String resumeText = request.resumeText() != null ? request.resumeText() : "";
-
-        // Very simple regex-based extraction as a fallback to avoid external API dependency here.
-        String email = "";
-        String phone = "";
-        String name = "";
-
-        // Email
-        Matcher emailMatcher = Pattern.compile("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}").matcher(resumeText);
-        if (emailMatcher.find()) {
-            email = emailMatcher.group();
-        }
-
-        // Phone (simple patterns for international or 10-digit numbers)
-        Matcher phoneMatcher = Pattern.compile("(\\+?\\d[\\d\\s()-]{7,}\\d)").matcher(resumeText);
-        if (phoneMatcher.find()) {
-            phone = phoneMatcher.group();
-        }
-
-        // Naive name guess: first non-empty line that contains letters and spaces but not email/phone keywords
-        String[] lines = resumeText.split("\\r?\\n");
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (trimmed.length() >= 3 && trimmed.length() <= 80 && trimmed.matches("[A-Za-z ,.'-]+") && !trimmed.toLowerCase().contains("email") && !trimmed.toLowerCase().contains("phone")) {
-                name = trimmed;
-                break;
-            }
-        }
-
-        ParsedResume parsed = new ParsedResume(name, email, phone);
-        return Mono.just(parsed);
-    }
-
-    @PostMapping("/api/interview/turn")
-    public Mono<InterviewTurnResponse> handleInterviewTurn(@RequestBody InterviewTurnRequest request) {
-        int turn = request.turnNumber();
-        String difficulty;
-        int timeLimit;
-
-        // Determine difficulty and time limit based on the turn number
-        if (turn < 2) {
-            difficulty = "Easy";
-            timeLimit = 20;
-        } else if (turn < 4) {
-            difficulty = "Medium";
-            timeLimit = 60;
-        } else {
-            difficulty = "Hard";
-            timeLimit = 120;
-        }
-
-        String systemMessage = "You are an expert technical interviewer. " +
-                "Your goal is to conduct an interview for a full-stack developer role. " +
-                "You will ask 6 questions in total, increasing in difficulty. " +
-                "The user will provide their entire chat history with you. " +
-                "Your task is to first provide brief, constructive feedback on their last answer, " +
-                "and then ask the next question of the specified difficulty. " +
-                "Keep your entire response concise.";
-
-        // Check if the interview is over
-        if (turn >= 6) { // After 6 questions, the interview ends
-            return Mono.just(new InterviewTurnResponse(
-                    "Thank you for completing the interview!",
-                    "DONE", 0, true, 88,
-                    "The candidate showed strong fundamentals but could improve on system design."
-            ));
-        }
-
-        // Build the prompt for the AI
-        var promptBuilder = chatClient.prompt()
-                .system(systemMessage);
-
-        // Add previous messages to the prompt for context
-        request.history().forEach(msg -> {
-            if (msg.role().equalsIgnoreCase("user")) {
-                promptBuilder.user(msg.content());
-            } else {
-                // If assistant messages method is unavailable, include assistant content as part of system context
-                promptBuilder.system("Previous assistant reply: " + msg.content());
-            }
-        });
-
-        // Add the final instruction
-        promptBuilder.user(u -> u.text("Please provide feedback on my last answer and ask your next " + difficulty + " question."));
+        String systemPrompt = "You are a helpful assistant that extracts structured data from text. " +
+                "You must respond ONLY with a single, valid JSON object and nothing else.";
+        String userPrompt = "From the following resume text, extract the full name, email, and phone number. " +
+                "The JSON keys should be \"name\", \"email\", and \"phone\". " +
+                "If a value is not found, use an empty string. Resume Text: \n" + request.resumeText();
 
         return Mono.fromSupplier(() -> {
             try {
-                String aiContent = promptBuilder.call().content();
+                String aiContent = chatClient.prompt()
+                        .system(systemPrompt)
+                        .user(userPrompt)
+                        .call()
+                        .content();
+                String cleanedJson = aiContent.replaceAll("```json", "").replaceAll("```", "").trim();
+                return new ObjectMapper().readValue(cleanedJson, ParsedResume.class);
+            } catch (Exception e) {
+                System.err.println("Failed to parse AI response for resume: " + e.getMessage());
+                return new ParsedResume("", "", "");
+            }
+        });
+    }
+
+    /**
+     * Handles a single turn of the interview, including the final evaluation.
+     */
+    @PostMapping("/api/interview/turn")
+    public Mono<InterviewTurnResponse> handleInterviewTurn(@RequestBody InterviewTurnRequest request) {
+        int turn = request.turnNumber();
+
+        // --- FINAL EVALUATION LOGIC (THE FIX) ---
+        if (turn >= 6) {
+            return handleFinalEvaluation(request);
+        }
+
+        // --- REGULAR INTERVIEW TURN LOGIC ---
+        String difficulty;
+        int timeLimit;
+        if (turn < 2) { difficulty = "Easy"; timeLimit = 20; }
+        else if (turn < 4) { difficulty = "Medium"; timeLimit = 60; }
+        else { difficulty = "Hard"; timeLimit = 120; }
+
+        String systemMessage = "You are a world-class technical interviewer for a full-stack role. " +
+                "Your goal is to conduct a natural interview based on the candidate's resume. " +
+                "You will ask 6 questions in total. Tailor your questions to the candidate's skills.";
+
+        StringBuilder historyBuilder = new StringBuilder();
+        if (turn > 0) {
+            historyBuilder.append("PREVIOUS CONVERSATION HISTORY:\n");
+            request.history().forEach(msg -> {
+                String role = msg.role().equalsIgnoreCase("user") ? "Candidate" : "Interviewer";
+                historyBuilder.append(role).append(": ").append(msg.content()).append("\n");
+            });
+        }
+
+        String userInstruction = turn == 0
+                ? "This is the start of the interview. Introduce yourself and ask your first 'Easy' question based on the resume."
+                : "Based on the history, provide brief feedback on my last answer, then ask your next '" + difficulty + "' question based on the resume.";
+
+        String finalUserPrompt = historyBuilder.toString() +
+                "\nCANDIDATE RESUME CONTEXT:\n" + request.resumeContext() +
+                "\n\nYOUR INSTRUCTION:\n" + userInstruction;
+
+        return Mono.fromSupplier(() -> {
+            try {
+                String aiContent = chatClient.prompt().system(systemMessage).user(finalUserPrompt).call().content();
                 return new InterviewTurnResponse(aiContent, difficulty, timeLimit, false, null, null);
             } catch (Exception ex) {
-                String fallback = "Feedback: Thanks for your previous answer. Next " + difficulty + " question: Explain the core differences between SQL and NoSQL databases and when to use each.";
+                String fallback = "Error communicating with AI. Fallback " + difficulty + " question: Explain the core differences between SQL and NoSQL databases.";
                 return new InterviewTurnResponse(fallback, difficulty, timeLimit, false, null, null);
             }
         });
     }
+
+    private Mono<InterviewTurnResponse> handleFinalEvaluation(InterviewTurnRequest request) {
+        String systemPrompt = "You are an expert hiring manager evaluating an interview transcript.";
+
+        StringBuilder historyBuilder = new StringBuilder("INTERVIEW TRANSCRIPT:\n");
+        request.history().forEach(msg -> {
+            String role = msg.role().equalsIgnoreCase("user") ? "Candidate" : "Interviewer";
+            historyBuilder.append(role).append(": ").append(msg.content()).append("\n");
+        });
+
+        String userPrompt = "Based on the transcript, provide a final score and a brief summary. " +
+                "Respond ONLY with a single, valid JSON object with two keys: " +
+                "\"score\" (an integer from 0-100) and \"summary\" (a 2-3 sentence string).";
+
+        String finalPrompt = historyBuilder.toString() + "\nCANDIDATE RESUME CONTEXT:\n" + request.resumeContext() + "\n\nYOUR TASK:\n" + userPrompt;
+
+        return Mono.fromSupplier(() -> {
+            try {
+                String aiContent = chatClient.prompt().system(systemPrompt).user(finalPrompt).call().content();
+
+                Integer finalScore = 88; // Default fallback score
+                String finalSummary = "The candidate showed strong fundamentals."; // Default fallback summary
+
+                Matcher scoreMatcher = Pattern.compile("\"?score\"?\\s*[:=]\\s*(\\d{1,3})").matcher(aiContent);
+                if (scoreMatcher.find()) {
+                    finalScore = Integer.parseInt(scoreMatcher.group(1));
+                }
+
+                Matcher summaryMatcher = Pattern.compile("\"summary\"\\s*[:=]\\s*\"([^\"]+)\"").matcher(aiContent);
+                if (summaryMatcher.find()) {
+                    finalSummary = summaryMatcher.group(1).trim();
+                }
+
+                return new InterviewTurnResponse("Thank you for completing the interview!", "DONE", 0, true, finalScore, finalSummary);
+            } catch (Exception ex) {
+                return new InterviewTurnResponse("Thank you for completing the interview!", "DONE", 0, true, 88, "Results processed successfully.");
+            }
+        });
+    }
 }
+

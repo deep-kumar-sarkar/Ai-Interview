@@ -1,11 +1,13 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import axios from 'axios';
 
-// Define initial state separately so we can reuse it in a reset reducer
+// THE FIX: Add candidateInfo to the initial state so it gets reset properly.
 const initialState = {
+    candidateInfo: null,
+    resumeText: "",
     messages: [],
     turnNumber: 0,
-    timeLimit: 0, // Time limit for the current question
+    timeLimit: 0,
     isInterviewOver: false,
     finalScore: null,
     finalSummary: null,
@@ -13,26 +15,35 @@ const initialState = {
     error: null,
 };
 
-// Update the async thunk to call the new endpoint
 export const progressInterviewTurn = createAsyncThunk(
     'interview/progressTurn',
     async (userMessage, { getState, dispatch }) => {
         const { interview } = getState();
-        const currentHistory = interview.messages;
-        const currentTurn = interview.turnNumber;
+        // const currentHistory = interview.messages;
+        // const currentTurn = interview.turnNumber;
 
-        // Add user message to state immediately for snappy UI
-        if (currentTurn > 0) { // Don't add the initial "start" message
+        const { messages, turnNumber, resumeText } = interview;
+
+        // if (currentTurn > 0) {
+        //     dispatch(addMessage({ role: 'user', content: userMessage }));
+        // }
+        if (turnNumber > 0) {
             dispatch(addMessage({ role: 'user', content: userMessage }));
         }
 
+        // const requestBody = {
+        //     history: currentHistory,
+        //     turnNumber: currentTurn
+        // };
+
         const requestBody = {
-            history: currentHistory,
-            turnNumber: currentTurn
+            resumeContext: resumeText, // Add it to the request body
+            history: messages,
+            turnNumber: turnNumber
         };
 
         const response = await axios.post('/api/interview/turn', requestBody);
-        return response.data; // This is our new InterviewTurnResponse object
+        return response.data;
     }
 );
 
@@ -40,10 +51,16 @@ const interviewSlice = createSlice({
     name: 'interview',
     initialState,
     reducers: {
+        setResumeText: (state, action) => {
+            state.resumeText = action.payload;
+        },
+        setCandidateInfo: (state, action) => {
+            state.candidateInfo = action.payload;
+        },
         addMessage: (state, action) => {
             state.messages.push(action.payload);
         },
-        // Reset the interview state completely
+        // This action now correctly resets the entire slice, including candidateInfo
         resetInterview: () => initialState,
     },
     extraReducers: (builder) => {
@@ -53,7 +70,6 @@ const interviewSlice = createSlice({
             })
             .addCase(progressInterviewTurn.fulfilled, (state, action) => {
                 const { aiResponse, timeLimit, isInterviewOver, score, summary } = action.payload;
-
                 state.messages.push({ role: 'ai', content: aiResponse });
                 state.timeLimit = timeLimit;
                 state.turnNumber += 1;
@@ -69,5 +85,6 @@ const interviewSlice = createSlice({
     },
 });
 
-export const { addMessage, resetInterview } = interviewSlice.actions;
+// We need to export setCandidateInfo as well
+export const { setResumeText, addMessage, resetInterview, setCandidateInfo } = interviewSlice.actions;
 export default interviewSlice.reducer;
